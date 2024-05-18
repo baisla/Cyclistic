@@ -1,0 +1,186 @@
+-- Creating the new table data_2022 if it doesn't exist
+CREATE TABLE IF NOT EXISTS Cyclist_bike_sharing.data_2022 AS
+
+-- Append data from 12 tables into data_2022
+SELECT * FROM `sturdy-cable-420111.Cyclist_bike_sharing.2020_Q1`
+UNION ALL
+SELECT * FROM `sturdy-cable-420111.Cyclist_bike_sharing.data_04`
+UNION ALL 
+SELECT * FROM `sturdy-cable-420111.Cyclist_bike_sharing.data_05`
+UNION ALL 
+SELECT * FROM `sturdy-cable-420111.Cyclist_bike_sharing.data_06`;
+
+SELECT 
+COUNT( ride_id) as count_ride_id,
+COUNT( rideable_type) as count_rideable_type,
+COUNT( started_at) as count_started_at,
+COUNT( ended_at) as count_ended_at,
+COUNT( start_station_name) as count_start_station_name,
+COUNT( start_station_id) as count_start_station_id,
+COUNT( end_station_name) as count_end_station_name,
+COUNT( end_station_id) as count_end_station_id,
+COUNT( start_lat) as count_start_lat,
+COUNT( start_lng) as count_start_lng,
+COUNT( end_lat) as count_end_lat,
+COUNT( end_lng) as count_end_lng,
+COUNT( member_casual) as count_member_casual,
+
+FROM `sturdy-cable-420111.Cyclist_bike_sharing.data_2022`
+WHERE
+TIMESTAMP_DIFF(ended_at, started_at, MINUTE) < 1
+OR 
+TIMESTAMP_DIFF(ended_at, started_at, HOUR) > 24
+OR
+start_station_name IS NULL
+OR
+end_station_name IS NULL
+OR
+start_station_id IS NULL
+OR
+end_station_id IS NULL
+;
+SELECT 
+COUNT(DISTINCT ride_id) as count_ride_id,
+COUNT(DISTINCT rideable_type) as count_rideable_type,
+COUNT(DISTINCT started_at) as count_started_at,
+COUNT(DISTINCT ended_at) as count_ended_at,
+COUNT(DISTINCT start_station_name) as count_start_station_name,
+COUNT(DISTINCT start_station_id) as count_start_station_id,
+COUNT(DISTINCT end_station_name) as count_end_station_name,
+COUNT(DISTINCT end_station_id) as count_end_station_id,
+COUNT(DISTINCT start_lat) as count_start_lat,
+COUNT(DISTINCT start_lng) as count_start_lng,
+COUNT(DISTINCT end_lat) as count_end_lat,
+COUNT(DISTINCT end_lng) as count_end_lng,
+COUNT(DISTINCT member_casual) as count_member_casual,
+
+FROM `sturdy-cable-420111.Cyclist_bike_sharing.data_2022` LIMIT 1000
+;
+
+--Create new table
+CREATE TABLE IF NOT EXISTS Cyclist_bike_sharing.data_2022_final
+AS
+--create new columns for date, month, year, day of the week, hour of the day, route
+SELECT 
+  DISTINCT ride_id,
+  rideable_type,
+  started_at,
+  ended_at,
+  start_station_id,
+  start_station_name,
+  end_station_id,
+  end_station_name,
+  start_lat,
+  start_lng,
+  end_lat,
+  end_lng,
+  IF(end_station_name = start_station_name, 1, 0) AS round_trip,
+  CAST(started_at AS DATE) AS date,
+  FORMAT_DATE('%b', started_at) AS month,
+  FORMAT_DATE('%Y', started_at) AS year,
+  TIMESTAMP_DIFF(ended_at, started_at, MINUTE) AS ride_length_mins,
+  CONCAT(start_station_name," to ", end_station_name) as route,
+  FORMAT_DATE('%a', started_at) AS day_of_week,
+  FORMAT_DATE('%H', started_at) AS hour_of_day,
+  CAST(started_at AS TIME) AS start_time,
+  CAST(ended_at AS TIME) AS end_time,
+  member_casual
+FROM `sturdy-cable-420111.Cyclist_bike_sharing.data_2022`
+--filter off records with null start station name and null end station name and removed ride lengths below a minute and above 24 hours
+WHERE
+  start_station_name IS NOT NULL
+  AND end_station_name IS NOT NULL
+  AND start_station_id IS NOT NULL
+  AND end_station_id IS NOT NULL
+  AND TIMESTAMP_DIFF(ended_at, started_at, MINUTE) > 1
+  AND TIMESTAMP_DIFF(ended_at, started_at, HOUR) < 24
+ORDER BY date, start_time;
+
+-- Calculate the quartiles of the ride_length distribution
+-- Values above Q3 + 1.5xIQR or below Q1 - 1.5xIQR are considered as outliers. 
+-- Values above Q3 + 3xIQR or below Q1 - 3xIQR are considered as extreme points (or extreme outliers)
+
+WITH quartiles AS (
+    SELECT
+    PERCENTILE_DISC(ride_length_mins, 0) OVER() AS min,
+    PERCENTILE_DISC(ride_length_mins, 0.25) OVER() AS q1,
+    PERCENTILE_DISC(ride_length_mins, 0.5) OVER() AS median,
+    PERCENTILE_DISC(ride_length_mins, 0.75) OVER() AS q3,
+    PERCENTILE_DISC(ride_length_mins, 1) OVER() AS max
+    FROM `sturdy-cable-420111.Cyclist_bike_sharing.data_2022_final`
+    WHERE member_casual = 'casual'
+    LIMIT 1
+)
+
+SELECT
+min,
+q1,
+median,
+q3,
+max,
+q3 - q1 AS iqr,
+-- Evaluate the lower outlier, if the calculated is lower than the minimum, then there is no lower outlier
+CASE
+    WHEN q1 + (1.5 * (q3 - q1)) > quartiles.max THEN NULL
+    ELSE q1 + (1.5 * (q3 - q1))
+END AS upper_outlier,
+-- Evaluate the upper outlier, if the calculated is higher than the minimum, then there is no lower outlier
+CASE
+    WHEN q1 - (1.5 * (q3 - q1)) < quartiles.min THEN NULL
+    ELSE q1 - (1.5 * (q3 - q1))
+END AS lower_outlier,
+
+-- Evaluate the extremely lower outlier, if the calculated is lower than the minimum, then there is no lower outlier
+CASE
+    WHEN q1 + (3 * (q3 - q1)) > quartiles.max THEN NULL
+    ELSE q1 + (3 * (q3 - q1))
+END AS extreme_upper_outlier,
+-- Evaluate the extremely upper outlier, if the calculated is higher than the minimum, then there is no lower outlier
+CASE
+    WHEN q1 - (3 * (q3 - q1)) < quartiles.min THEN NULL
+    ELSE q1 - (3 * (q3 - q1))
+END AS extreme_lower_outlier
+FROM quartiles;
+
+SELECT
+    CONCAT(
+        FLOOR(ride_length_mins / 2) * 2, 
+        '-', 
+        FLOOR(ride_length_mins / 2) * 2+ 1
+    ) AS ride_length_bin,
+    COUNT(*) AS bin_count
+FROM `sturdy-cable-420111.Cyclist_bike_sharing.data_2022_final` 
+--change member_casual to "member" or "casual"
+WHERE member_casual = 'member'
+GROUP BY ride_length_bin
+ORDER BY MIN(ride_length_mins);
+
+
+--to get ride summary statistics by weekday
+SELECT  
+day_of_week, 
+COUNT(DISTINCT ride_id) AS number_of_rides,
+AVG(ride_length_mins) AS average_ridelength,
+MAX(ride_length_mins) AS max_ridelength,
+MIN(ride_length_mins) AS min_ridelength
+
+FROM `sturdy-cable-420111.Cyclist_bike_sharing.data_2022_final`
+--change the where argument to "casual" or "member" as needed
+WHERE member_casual = 'casual'
+GROUP BY day_of_week
+ORDER BY day_of_week
+;
+
+
+SELECT 
+hour_of_day, 
+COUNT(DISTINCT ride_id) AS number_of_rides,
+AVG(ride_length_mins) AS average_ridelength,
+MAX(ride_length_mins) AS max_ridelength,
+MIN(ride_length_mins) AS min_ridelength
+
+FROM `sturdy-cable-420111.Cyclist_bike_sharing.data_2022_final`
+-- Changed the where argument to casual or member as needed
+WHERE member_casual = 'casual'
+GROUP BY hour_of_day
+ORDER BY hour_of_day;
